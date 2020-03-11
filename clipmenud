@@ -32,15 +32,35 @@ has_xdotool=0
 # shellcheck disable=SC2206
 cm_selections=( $CM_SELECTIONS )
 
+# Dependencies
+ext_awk="awk"
+ext_cat="cat"
+ext_cksum="cksum"
+ext_clipnotify="clipnotify"
+ext_comm="comm"
+ext_flock="flock"
+ext_head="head"
+ext_mkdir="mkdir"
+ext_mv="mv"
+ext_rm="rm"
+ext_tail="tail"
+ext_timeout="timeout"
+ext_truncate="truncate"
+ext_uniq="uniq"
+ext_wc="wc"
+ext_xdotool="xdotool"
+ext_xsel="xsel"
+
+
 if command -v timeout >/dev/null 2>&1; then
-    timeout_cmd=(timeout 1)
+    timeout_cmd=("${ext_timeout}" 1)
 else
     echo "WARN: No timeout binary. Continuing without any timeout on xsel." >&2
     timeout_cmd=()
 fi
 
 _xsel() {
-    "${timeout_cmd[@]}" xsel --logfile /dev/null "$@"
+    "${timeout_cmd[@]}" "${ext_xsel}" --logfile /dev/null "$@"
 }
 
 error() {
@@ -57,7 +77,7 @@ die() {
 }
 
 make_line_cksums() {
-    while read -r line; do cksum <<< "${line#* }"; done
+    while read -r line; do "${ext_cksum}" <<< "${line#* }"; done
 }
 
 get_first_line() {
@@ -73,7 +93,7 @@ get_first_line() {
     # you have 5 leading lines of whitespace, displaying " (6 lines)" is much
     # less useful than displaying "foo (6 lines)", where "foo" is the first
     # line in the entry with actionable context.
-    awk -v limit="$line_length_limit" '
+    "${ext_awk}" -v limit="$line_length_limit" '
         BEGIN { printed = 0; }
 
         printed == 0 && NF {
@@ -109,7 +129,7 @@ element_in() {
 }
 
 if [[ $1 == --help ]] || [[ $1 == -h ]]; then
-    cat << 'EOF'
+    "$ext_cat" << 'EOF'
 clipmenud is the daemon that collects and caches what's on the clipboard.
 when you want to select a clip.
 
@@ -129,25 +149,25 @@ fi
 
 # It's ok that this only applies to the final directory.
 # shellcheck disable=SC2174
-mkdir -p -m0700 "$cache_dir"
+"${ext_mkdir}" -p -m0700 "$cache_dir"
 
 exec {session_lock_fd}> "$session_lock_file"
 
-flock -x -n "$session_lock_fd" ||
+"${ext_flock}" -x -n "$session_lock_fd" ||
     die 2 "Can't lock session file -- is another clipmenud running?"
 
 declare -A last_data
 declare -A last_filename
 declare -A last_cache_file_output
 
-command -v clipnotify >/dev/null 2>&1 && has_clipnotify=1
+command -v "${ext_clipnotify}" >/dev/null 2>&1 && has_clipnotify=1
 
 if ! (( has_clipnotify )); then
     echo "WARN: Consider installing clipnotify for better performance." >&2
     echo "WARN: See https://github.com/cdown/clipnotify." >&2
 fi
 
-command -v xdotool >/dev/null 2>&1 && has_xdotool=1
+command -v "${ext_xdotool}" >/dev/null 2>&1 && has_xdotool=1
 
 if [[ $CM_IGNORE_WINDOW ]] && ! (( has_xdotool )); then
     echo "WARN: CM_IGNORE_WINDOW does not work without xdotool, which is not installed" >&2
@@ -155,13 +175,13 @@ fi
 
 exec {lock_fd}> "$lock_file"
 
-sleep_cmd=(sleep "${CM_SLEEP:-0.5}")
+sleep_cmd=("${ext_sleep}" "${CM_SLEEP:-0.5}")
 
 while true; do
     if ! (( CM_ONESHOT )); then
         if (( has_clipnotify )); then
             # Fall back to polling if clipnotify fails
-            clipnotify || "${sleep_cmd[@]}"
+            "${ext_clipnotify}" || "${sleep_cmd[@]}"
         else
             # Use old polling method
             "${sleep_cmd[@]}"
@@ -169,14 +189,14 @@ while true; do
     fi
 
     if [[ $CM_IGNORE_WINDOW ]] && (( has_xdotool )); then
-        windowname="$(xdotool getactivewindow getwindowname)"
+        windowname="$(${ext_xdotool} getactivewindow getwindowname)"
         if [[ "$windowname" =~ $CM_IGNORE_WINDOW ]]; then
             debug "ignoring clipboard because windowname \"$windowname\" matches \"${CM_IGNORE_WINDOW}\""
             continue
         fi
     fi
 
-    if ! flock -x -w "$lock_timeout" "$lock_fd"; then
+    if ! "${ext_flock}" -x -w "$lock_timeout" "$lock_fd"; then
         if (( CM_ONESHOT )); then
             die 1 "Timed out waiting for lock"
         else
@@ -218,7 +238,7 @@ while true; do
             debug "Removing ${last_filename[$selection]}"
 
             previous_size=$(wc -c <<< "${last_cache_file_output[$selection]}")
-            truncate -s -"$previous_size" "$cache_file"
+            "${ext_truncate}" -s -"$previous_size" "$cache_file"
 
             file=${last_filename[$selection]}
             info "Removing $file as a possible partial"
@@ -238,7 +258,7 @@ while true; do
         # Recover without restart if we deleted the entire clip dir.
         # It's ok that this only applies to the final directory.
         # shellcheck disable=SC2174
-        mkdir -p -m0700 "$cache_dir"
+        "${ext_mkdir}" -p -m0700 "$cache_dir"
 
         debug "Writing $data to $filename"
         printf '%s' "$data" > "$filename"
@@ -267,14 +287,14 @@ while true; do
         # Fail quickly if we're not far enough over, to avoid calling `cksum` a
         # lot and killing perf if we're not batched.
         if (( CM_MAX_CLIPS )) && [[ -f $cache_file ]] &&
-           (( "$(wc -l < "$cache_file")" > CM_MAX_CLIPS_THRESH )); then
+           (( "$(${ext_wc} -l < "$cache_file")" > CM_MAX_CLIPS_THRESH )); then
             # comm filters out duplicate entries that we'd delete still
             # referenced entries for
             mapfile -t to_remove < <(
-                comm -23 \
-                <(head -n -"$CM_MAX_CLIPS" "$cache_file" |
+                "${ext_comm}" -23 \
+                <("${ext_head}" -n -"$CM_MAX_CLIPS" "$cache_file" |
                     make_line_cksums | sort) \
-                <(tail -n -"$CM_MAX_CLIPS" "$cache_file" |
+                <("${ext_tail}" -n -"$CM_MAX_CLIPS" "$cache_file" |
                     make_line_cksums | sort)
             )
 
@@ -297,15 +317,15 @@ while true; do
 
                 info "Removing the following due to overflow: ${files[*]}"
 
-                rm -- "${files[@]}"
+                "${ext_rm}" -- "${files[@]}"
                 trunc_tmp=$(mktemp)
-                tail -n "$CM_MAX_CLIPS" "$cache_file" | uniq > "$trunc_tmp"
-                mv -- "$trunc_tmp" "$cache_file"
+                "${ext_tail}" -n "$CM_MAX_CLIPS" "$cache_file" | "${ext_uniq}" > "$trunc_tmp"
+                "${ext_mv}" -- "$trunc_tmp" "$cache_file"
             fi
         fi
     done
 
-    flock -u "$lock_fd"
+    "${ext_flock}" -u "$lock_fd"
 
     if (( CM_ONESHOT )); then
         debug 'Oneshot mode enabled, exiting'
